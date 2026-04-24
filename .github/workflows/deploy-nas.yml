@@ -1,0 +1,25 @@
+name: Trigger NAS Dokploy redeploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "process/**"
+      - "embedder/**"
+      - "scorer/**"
+      - "indexer/**"
+      - "gateway/**"
+      - "agent/**"
+      - "mcp-server/**"
+      - ".github/workflows/deploy-nas.yml"
+
+jobs:
+  webhook:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Dokploy webhook
+        run: |
+          curl -fsSL -X POST "${{ secrets.DOKPLOY_WEBHOOK_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.DOKPLOY_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"sha": "${{ github.sha }}", "ref": "${{ github.ref_name }}"}'

@@ -1,0 +1,32 @@
+name: Nightly ranking eval
+
+on:
+  schedule:
+    - cron: "23 7 * * *"  # 07:23 UTC daily
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install httpx orjson rich
+      - name: Run eval against staging
+        env:
+          GATEWAY_URL: ${{ vars.STAGING_GATEWAY_URL }}
+        run: python eval/run.py
+      - name: Compare nDCG against baseline
+        run: |
+          python eval/compare.py --baseline=eval/baseline.json --current=eval/latest.json --threshold=0.01
+      - if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `nDCG@10 regressed > 1% — see workflow logs.`
+            })

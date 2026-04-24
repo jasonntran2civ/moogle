@@ -1,0 +1,107 @@
+# Local dev compose. Brings up the data services and the application
+# stack on a developer workstation. Resource footprints are tuned down
+# from the NAS file (smaller heap, no GDS plugin, embedded volumes).
+#
+# Use `make dev` (or `docker compose up -d`) from the repo root.
+
+name: evidencelens-dev
+
+networks:
+  evidencelens:
+    name: evidencelens-dev
+    driver: bridge
+
+volumes:
+  postgres_data:
+  nats_data:
+  meili_data:
+  qdrant_data:
+  neo4j_data:
+
+services:
+  # ---- Data layer ----
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: evidencelens
+      POSTGRES_USER: evidencelens
+      POSTGRES_PASSWORD: changeme-dev-only
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    ports: ["5432:5432"]
+    networks: [evidencelens]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evidencelens -d evidencelens"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    image: nats:2.11-alpine
+    command: ["-js", "-sd=/data", "-m=8222"]
+    volumes: [nats_data:/data]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    networks: [evidencelens]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    networks: [evidencelens]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.13
+    environment:
+      MEILI_MASTER_KEY: dev-master-key
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_ENV: development
+    volumes: [meili_data:/meili_data]
+    ports: ["7700:7700"]
+    networks: [evidencelens]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    volumes: [qdrant_data:/qdrant/storage]
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    networks: [evidencelens]
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/changeme-dev-only
+      NEO4J_dbms_memory_heap_max__size: "1G"
+    volumes: [neo4j_data:/data]
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    networks: [evidencelens]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel/collector-config.dev.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8888:8888"
+    networks: [evidencelens]

@@ -1,0 +1,28 @@
+name: Deploy workers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "workers/**"
+      - ".github/workflows/deploy-workers.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        worker: [pubsub-bridge, click-logger, webllm-shard, turnstile-verify]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          workingDirectory: workers/${{ matrix.worker }}
+          command: deploy

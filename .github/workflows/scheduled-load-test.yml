@@ -1,0 +1,26 @@
+name: Nightly k6 load test
+
+on:
+  schedule:
+    - cron: "29 2 * * *"  # 02:29 UTC nightly
+  workflow_dispatch:
+    inputs:
+      vus:
+        description: "Concurrent virtual users"
+        default: "5"
+      duration:
+        description: "Test duration"
+        default: "5m"
+
+jobs:
+  k6:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: grafana/setup-k6-action@v1
+      - run: |
+          k6 run \
+            --vus=${{ github.event.inputs.vus || 5 }} \
+            --duration=${{ github.event.inputs.duration || '5m' }} \
+            --env GATEWAY_URL=${{ vars.STAGING_GATEWAY_URL }} \
+            tests/load/search.js

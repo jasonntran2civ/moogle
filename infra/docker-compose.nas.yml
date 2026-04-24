@@ -1,0 +1,204 @@
+# NAS production stack (TrueNAS Docker).
+#
+# Long-running stateful services for EvidenceLens. Application services
+# (processor, indexer, embedder, scorer, gateway, agent, mcp-server) run
+# in their own per-service compose files and connect to this stack over
+# the docker network.
+#
+# Volumes are mounted to TrueNAS dataset paths under /mnt/tank/evidencelens/.
+# Adjust paths if your dataset layout differs.
+
+name: evidencelens-nas
+
+networks:
+  evidencelens:
+    name: evidencelens
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/tank/evidencelens/postgres
+  nats_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/tank/evidencelens/nats
+  meili_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/tank/evidencelens/meilisearch
+  qdrant_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/tank/evidencelens/qdrant
+  neo4j_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/tank/evidencelens/neo4j
+  prometheus_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/tank/evidencelens/prometheus
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: el-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    ports: ["5432:5432"]
+    networks: [evidencelens]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  nats:
+    image: nats:2.11-alpine
+    container_name: el-nats
+    restart: unless-stopped
+    command:
+      - "-js"
+      - "-sd=/data"
+      - "-m=8222"
+      - "--max_payload=4MB"
+    volumes:
+      - nats_data:/data
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+      - "6222:6222"
+    networks: [evidencelens]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: el-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    networks: [evidencelens]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.13
+    container_name: el-meilisearch
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_KEY}
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_ENV: production
+    volumes:
+      - meili_data:/meili_data
+    ports: ["7700:7700"]
+    networks: [evidencelens]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    container_name: el-qdrant
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    networks: [evidencelens]
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -q -O- http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: el-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+      NEO4J_PLUGINS: '["graph-data-science"]'
+      NEO4J_dbms_memory_heap_max__size: "4G"
+      NEO4J_dbms_memory_pagecache_size: "2G"
+    volumes:
+      - neo4j_data:/data
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    networks: [evidencelens]
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u $${NEO4J_USER:-neo4j} -p $${NEO4J_PASSWORD} 'RETURN 1' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    container_name: el-otel
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
+      - "8888:8888"  # collector self-metrics
+    networks: [evidencelens]
+    environment:
+      GRAFANA_LOKI_URL: ${GRAFANA_LOKI_URL}
+      GRAFANA_LOKI_USER: ${GRAFANA_LOKI_USER}
+      GRAFANA_LOKI_PASSWORD: ${GRAFANA_LOKI_PASSWORD}
+      GRAFANA_TEMPO_URL: ${GRAFANA_TEMPO_URL}
+      GRAFANA_TEMPO_USER: ${GRAFANA_TEMPO_USER}
+      GRAFANA_TEMPO_PASSWORD: ${GRAFANA_TEMPO_PASSWORD}
+      GRAFANA_MIMIR_URL: ${GRAFANA_MIMIR_URL}
+      GRAFANA_MIMIR_USER: ${GRAFANA_MIMIR_USER}
+      GRAFANA_MIMIR_PASSWORD: ${GRAFANA_MIMIR_PASSWORD}
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: el-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports: ["9090:9090"]
+    networks: [evidencelens]

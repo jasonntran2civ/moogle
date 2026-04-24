@@ -1,0 +1,16 @@
+name: Weekly PageRank refresh
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"  # Sun 03:17 UTC
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger Neo4j GDS pagerank job on NAS
+        run: |
+          curl -fsSL -X POST "${{ secrets.PAGERANK_TRIGGER_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.PAGERANK_TOKEN }}"

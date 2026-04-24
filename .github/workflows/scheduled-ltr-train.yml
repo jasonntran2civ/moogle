@@ -1,0 +1,23 @@
+name: Weekly LTR retraining
+
+on:
+  schedule:
+    - cron: "31 4 * * 1"  # Mon 04:31 UTC
+  workflow_dispatch:
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install xgboost google-cloud-bigquery pandas pyarrow scikit-learn
+      - name: Pull last week clicks from BigQuery
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GCP_DEPLOY_SA_JSON }}
+        run: python scorer/scripts/pull_clicks.py --days=7 --out=clicks.parquet
+      - name: Train new LTR model
+        run: python scorer/scripts/train_ltr.py --in=clicks.parquet --out=ltr_v_$(date +%Y%m%d).json
+      - name: Shadow deploy
+        run: python scorer/scripts/shadow_deploy.py --model=ltr_v_$(date +%Y%m%d).json --duration-hours=24
