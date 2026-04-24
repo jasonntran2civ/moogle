@@ -9,6 +9,10 @@ locals {
     "pubmed", "preprint", "trials", "ictrp", "fda", "openalex",
     "crossref", "unpaywall", "nih-reporter", "open-payments",
     "cochrane", "guidelines",
+    # Round-2 sources (spec section 2 rows 5, 16-20, 23-29)
+    "core", "chembl", "omim", "hpo", "disgenet", "cdc-wonder",
+    "ema", "mhra", "health-canada", "tga", "pmda", "nsf",
+    "drugbank", "pmc-oa",
   ]
 }
 
@@ -103,6 +107,20 @@ resource "google_cloud_scheduler_job" "ingester" {
     "open-payments" = "0 9 1 * *"     # monthly check, annual real refresh
     "cochrane"      = "0 10 * * 0"
     "guidelines"    = "0 11 * * 0"
+    "core"          = "0 12 * * 0"
+    "chembl"        = "0 13 1 */3 *"  # quarterly
+    "omim"          = "0 14 1 * *"    # monthly
+    "hpo"           = "0 15 1 * *"    # monthly
+    "disgenet"      = "0 16 1 * *"
+    "cdc-wonder"    = "0 17 1 * *"
+    "ema"           = "0 18 * * 0"    # weekly
+    "mhra"          = "0 19 * * 0"
+    "health-canada" = "0 20 * * 0"
+    "tga"           = "0 21 * * 0"
+    "pmda"          = "0 22 * * 0"
+    "nsf"           = "0 23 * * 0"
+    "drugbank"      = "0 1  1 */3 *" # quarterly
+    "pmc-oa"        = "0 2  * * 0"
   }, each.key, "0 12 * * 0")
   http_target {
     uri         = google_cloud_run_v2_service.ingester[each.key].uri

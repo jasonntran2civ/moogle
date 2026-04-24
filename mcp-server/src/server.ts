@@ -22,10 +22,11 @@ import {
 import { request as undiciRequest } from "undici";
 
 import { TOOLS, RESOURCE_URI_TEMPLATE } from "./tools.js";
+import * as rateLimit from "./rate_limit.js";
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? "http://localhost:8080";
 
-function makeServer(): Server {
+function makeServer(sessionId: string): Server {
   const server = new Server(
     { name: "evidencelens", version: "0.1.0" },
     { capabilities: { tools: {}, resources: {} } },
@@ -35,6 +36,16 @@ function makeServer(): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
+
+    // Per-session rate limit (spec section 13.3): 30 tool calls/min.
+    const rl = rateLimit.check(sessionId);
+    if (!rl.ok) {
+      return {
+        content: [{ type: "text", text: `rate limited: try again in ${rl.retryAfterSec}s` }],
+        isError: true,
+      };
+    }
+
     const url = `${GATEWAY_URL}/api/tool/${encodeURIComponent(name)}`;
     const res = await undiciRequest(url, {
       method: "POST",
@@ -49,6 +60,7 @@ function makeServer(): Server {
     return { content: [{ type: "text", text: JSON.stringify(data) }] };
   });
 
+  // Resources also count toward the rate limit at half cost.
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: [{
       uri: RESOURCE_URI_TEMPLATE,
@@ -75,7 +87,8 @@ function makeServer(): Server {
 
 async function runStdio(): Promise<void> {
   const transport = new StdioServerTransport();
-  const server = makeServer();
+  // stdio sessions get a stable per-process sessionId for rate limiting.
+  const server = makeServer(`stdio-${process.pid}`);
   await server.connect(transport);
   console.error("[mcp] stdio transport ready");
 }
@@ -99,8 +112,11 @@ async function runHttp(port: number): Promise<void> {
   app.get("/sse", async (req, res) => {
     const transport = new SSEServerTransport("/messages", res);
     transports.set(transport.sessionId, transport);
-    res.on("close", () => transports.delete(transport.sessionId));
-    const server = makeServer();
+    res.on("close", () => {
+      transports.delete(transport.sessionId);
+      rateLimit.reset(transport.sessionId);
+    });
+    const server = makeServer(transport.sessionId);
     await server.connect(transport);
   });
 

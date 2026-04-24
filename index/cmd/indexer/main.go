@@ -17,6 +17,7 @@ import (
 	"github.com/evidencelens/evidencelens/index/pkg/batchers/meili"
 	"github.com/evidencelens/evidencelens/index/pkg/batchers/neo4jb"
 	"github.com/evidencelens/evidencelens/index/pkg/batchers/qdrant"
+	"github.com/evidencelens/evidencelens/index/pkg/initdata"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -47,6 +48,24 @@ func main() {
 	if err != nil {
 		logger.Error("jetstream", "err", err)
 		return
+	}
+
+	// One-time idempotent init: Qdrant collection + Neo4j indexes.
+	if err := initdata.EnsureQdrantCollection(ctx, initdata.QdrantConfig{
+		URL:        getenv("QDRANT_URL", "http://localhost:6333"),
+		APIKey:     getenv("QDRANT_API_KEY", ""),
+		Collection: "evidence_v1",
+		Logger:     logger.With("init", "qdrant"),
+	}); err != nil {
+		logger.Warn("qdrant collection init", "err", err)
+	}
+	if err := initdata.EnsureNeo4jIndexes(ctx, initdata.Neo4jConfig{
+		URL:      getenv("NEO4J_URL", "bolt://localhost:7687"),
+		User:     getenv("NEO4J_USER", "neo4j"),
+		Password: getenv("NEO4J_PASSWORD", "changeme-dev-only"),
+		Logger:   logger.With("init", "neo4j"),
+	}); err != nil {
+		logger.Warn("neo4j index init", "err", err)
 	}
 
 	// Three batchers, each running its own goroutine.

@@ -5,9 +5,13 @@ interface SearchFilters {
   studyTypes?: string[];
   publishedYearMin?: number;
   publishedYearMax?: number;
+  meshTerms?: string[];
+  sources?: string[];
+  licenses?: string[];
   onlyWithCoi?: boolean;
   onlyWithFullText?: boolean;
   excludePredatoryJournals?: boolean;
+  sortMode?: "relevance" | "most_recent" | "most_cited" | "most_influential";
 }
 
 interface SearchState {

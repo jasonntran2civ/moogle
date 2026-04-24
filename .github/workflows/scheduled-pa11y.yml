@@ -1,0 +1,26 @@
+name: Nightly pa11y a11y audit
+
+on:
+  schedule:
+    - cron: "11 6 * * *"  # 06:11 UTC nightly
+  workflow_dispatch:
+
+jobs:
+  pa11y:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile=false
+      - run: pnpm --filter frontend build
+      - name: Start frontend
+        run: |
+          pnpm --filter frontend start &
+          for i in $(seq 1 30); do curl -fsS http://localhost:3000/ && break; sleep 2; done
+      - name: Install pa11y-ci
+        run: npm install -g pa11y-ci
+      - name: Run pa11y across all routes
+        run: pa11y-ci --config frontend/tests/a11y/pa11y.config.json

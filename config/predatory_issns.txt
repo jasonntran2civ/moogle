@@ -1,0 +1,12 @@
+# Snapshot of journals flagged as predatory or low-quality.
+#
+# Sources: Beall's List archive (beallslist.net snapshot) and Cabell's
+# Predatory Reports public sample. ISSNs only, one per line, no
+# qualifiers. Refresh quarterly via .github/workflows/scheduled-ltr-train.yml
+# or a dedicated job.
+#
+# This file ships intentionally minimal — operators should populate from
+# their preferred curated source. EvidenceLens does not maintain its own
+# predatory-journal classifier; we rely on the published lists.
+#
+# When this file is empty, every journal is treated as non-predatory.

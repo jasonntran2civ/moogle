@@ -7,6 +7,7 @@ package meili
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -68,12 +69,14 @@ func (b *Batcher) Run(ctx context.Context) {
 		if len(batch) == 0 { return }
 		b.cfg.Logger.Info("flush", "n", len(batch))
 		idx := b.client.Index(b.cfg.IndexName)
-		// Index expects [].any; convert. addOrReplace: same as upsert.
-		toSend := make([]any, len(batch))
-		for i, m := range batch {
-			var obj any
-			_ = json.Unmarshal(m, &obj)
-			toSend[i] = obj
+		// Convert canonical Document to flattened IndexableDocument
+		// (spec section 3.2). Avoids storing nested arrays Meilisearch
+		// can't facet-filter on.
+		toSend := make([]any, 0, len(batch))
+		for _, m := range batch {
+			var d map[string]any
+			if err := json.Unmarshal(m, &d); err != nil { continue }
+			toSend = append(toSend, flatten(d))
 		}
 		if _, err := idx.AddDocuments(toSend, "id"); err != nil {
 			b.cfg.Logger.Error("meili add docs", "n", len(batch), "err", err)
@@ -97,6 +100,59 @@ func (b *Batcher) Run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// flatten converts a canonical Document dict into the IndexableDocument
+// shape from spec section 3.2 — denormalized scalar facet-filter fields
+// promoted to the top level so Meilisearch can sort/filter on them
+// without nested-array gymnastics.
+func flatten(d map[string]any) map[string]any {
+	out := map[string]any{
+		"id":             d["id"],
+		"title":          d["title"],
+		"abstract":       d["abstract"],
+		"full_text":      d["full_text"],
+		"study_type":     d["study_type"],
+		"mesh_terms":     d["mesh_terms"],
+		"keywords":       d["keywords"],
+		"license":        d["license"],
+		"source":         d["source"],
+		"canonical_url":  d["canonical_url"],
+		"citation_count":     d["citation_count"],
+		"citation_pagerank": d["citation_pagerank"],
+		"published_at":   d["published_at"],
+		"has_coi_authors": d["has_coi_authors"],
+		"max_author_payment_usd": d["max_author_payment_usd"],
+		"has_full_text":  d["full_text"] != nil && d["full_text"] != "",
+		"salience":       d["salience"],
+	}
+	if pa, ok := d["published_at"].(string); ok && len(pa) >= 4 {
+		if y, err := parseYear(pa[:4]); err == nil {
+			out["published_year"] = y
+		}
+	}
+	if j, ok := d["journal"].(map[string]any); ok {
+		out["journal_name"] = j["name"]
+		out["journal_predatory"] = j["is_predatory"]
+	}
+	if authors, ok := d["authors"].([]any); ok {
+		names := make([]string, 0, len(authors))
+		for _, a := range authors {
+			if am, ok := a.(map[string]any); ok {
+				if n, ok := am["display_name"].(string); ok {
+					names = append(names, n)
+				}
+			}
+		}
+		out["authors_display"] = names
+	}
+	return out
+}
+
+func parseYear(s string) (int, error) {
+	var y int
+	_, err := fmt.Sscanf(s, "%d", &y)
+	return y, err
 }
 
 func (b *Batcher) Close() {

@@ -141,49 +141,56 @@ class BatchedEmbedder:
                 cursor += count
 
 
-# ---- gRPC server (stub references; uncomment when proto/gen/python lands) ----
-#
-# class EmbedderServicer(embedder_pb2_grpc.EmbedderServiceServicer):
-#     def __init__(self, batcher: BatchedEmbedder) -> None:
-#         self.batcher = batcher
-#
-#     async def Embed(self, request_iterator, context):
-#         async for req in request_iterator:
-#             vecs = await self.batcher.embed(req.request_id, list(req.texts))
-#             yield embedder_pb2.EmbedResponse(
-#                 request_id=req.request_id,
-#                 embeddings=[
-#                     embedder_pb2.EmbeddingVector(values=v, dim=len(v)) for v in vecs
-#                 ],
-#                 embedding_model=self.batcher.state.name,
-#             )
-#
-#     async def EmbedOnce(self, request, context):
-#         vecs = await self.batcher.embed(request.request_id, list(request.texts))
-#         return embedder_pb2.EmbedResponse(
-#             request_id=request.request_id,
-#             embeddings=[embedder_pb2.EmbeddingVector(values=v, dim=len(v)) for v in vecs],
-#             embedding_model=self.batcher.state.name,
-#         )
-#
-#     async def Healthz(self, request, context):
-#         return embedder_pb2.EmbedderHealthzResponse(
-#             status="degraded" if self.batcher.state.degraded else "ok",
-#             embedding_model=self.batcher.state.name,
-#             detail=self.batcher.state.detail,
-#         )
+# ---- gRPC servicer wired against the proto/gen/python shim ----
+
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "..", "proto", "gen", "python"))
+
+from evidencelens.v1 import (  # type: ignore[import]
+    EmbedRequest, EmbedResponse, EmbeddingVector,
+    EmbedderHealthzRequest, EmbedderHealthzResponse,
+)
+from evidencelens.v1.embedder_grpc import (  # type: ignore[import]
+    EmbedderServiceServicer,
+    add_EmbedderServiceServicer_to_server,
+)
+
+
+class EmbedderServicer(EmbedderServiceServicer):
+    def __init__(self, batcher: "BatchedEmbedder") -> None:
+        self.batcher = batcher
+
+    async def Embed(self, request_iterator, context):  # type: ignore[override]
+        async for req in request_iterator:
+            vecs = await self.batcher.embed(req.request_id, list(req.texts))
+            yield EmbedResponse(
+                request_id=req.request_id,
+                embeddings=[EmbeddingVector(values=v, dim=len(v)) for v in vecs],
+                embedding_model=self.batcher.state.name,
+            )
+
+    async def EmbedOnce(self, request, context):  # type: ignore[override]
+        vecs = await self.batcher.embed(request.request_id, list(request.texts))
+        return EmbedResponse(
+            request_id=request.request_id,
+            embeddings=[EmbeddingVector(values=v, dim=len(v)) for v in vecs],
+            embedding_model=self.batcher.state.name,
+        )
+
+    async def Healthz(self, request, context):  # type: ignore[override]
+        return EmbedderHealthzResponse(
+            status="degraded" if self.batcher.state.degraded else "ok",
+            embedding_model=self.batcher.state.name,
+            detail=self.batcher.state.detail,
+        )
+
 
 async def serve_grpc(model: SentenceTransformer, state: ModelState) -> grpc.aio.Server:
     server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=8))
     global _GLOBAL_BATCHER
     _GLOBAL_BATCHER = BatchedEmbedder(model, state)
     await _GLOBAL_BATCHER.start()
-    # embedder_pb2_grpc.add_EmbedderServiceServicer_to_server(EmbedderServicer(_GLOBAL_BATCHER), server)
-    # SERVICE_NAMES = (
-    #     embedder_pb2.DESCRIPTOR.services_by_name["EmbedderService"].full_name,
-    #     reflection.SERVICE_NAME,
-    # )
-    # reflection.enable_server_reflection(SERVICE_NAMES, server)
+    add_EmbedderServiceServicer_to_server(EmbedderServicer(_GLOBAL_BATCHER), server)
 
     health_servicer = health.aio.HealthServicer()
     health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)

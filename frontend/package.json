@@ -23,6 +23,7 @@
     "zustand": "^5.0.0",
     "tailwindcss": "^4.0.0",
     "@sentry/nextjs": "^8.45.0",
+    "pino": "^9.5.0",
     "posthog-js": "^1.200.0",
     "@mlc-ai/web-llm": "^0.2.78",
     "d3": "^7.9.0",

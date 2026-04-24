@@ -1,18 +1,25 @@
 "use client";
 
 import Link from "next/link";
+import { forwardRef } from "react";
 import { COIBadge } from "./COIBadge";
 
 interface Props { result: any; focused?: boolean }
 
-export function ResultCard({ result, focused }: Props) {
+export const ResultCard = forwardRef<HTMLLIElement, Props>(function ResultCard({ result, focused }, ref) {
   const d = result.document;
+  const url = `/document/${encodeURIComponent(d.id)}`;
   return (
     <li
-      className={"rounded border p-4 hover:bg-[hsl(var(--accent)/0.05)] " + (focused ? "ring-2 ring-[hsl(var(--accent))]" : "")}
+      ref={ref}
       tabIndex={0}
+      aria-current={focused ? "true" : undefined}
+      className={
+        "rounded border p-4 hover:bg-[hsl(var(--accent)/0.05)] focus:outline-none " +
+        (focused ? "ring-2 ring-[hsl(var(--accent))]" : "")
+      }
     >
-      <Link href={`/document/${encodeURIComponent(d.id)}`} className="text-base font-medium">
+      <Link href={url} className="text-base font-medium">
         {d.title}
       </Link>
       <div className="text-xs text-[hsl(var(--muted))] mt-0.5">
@@ -21,6 +28,9 @@ export function ResultCard({ result, focused }: Props) {
           <> · {d.citationCount} cites</>
         )}
       </div>
+      {d.salience && (
+        <p className="text-xs text-[hsl(var(--accent))] mt-1 italic">{d.salience}</p>
+      )}
       {d.authors?.length ? (
         <div className="text-sm mt-1 flex flex-wrap gap-1">
           {d.authors.slice(0, 6).map((a: any, i: number) => (
@@ -34,4 +44,4 @@ export function ResultCard({ result, focused }: Props) {
       {d.abstract && <p className="text-sm mt-2 line-clamp-3">{d.abstract}</p>}
     </li>
   );
-}
+});

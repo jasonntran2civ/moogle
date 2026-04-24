@@ -29,7 +29,9 @@ from utils.author_payment_joiner import AuthorPaymentJoiner
 from utils.chunker import chunk, mean_pool
 from utils.config import Config
 from utils.embedder_client import EmbedderClient
+from utils.entity_linker import link as link_entities, merge_into_mesh
 from utils.r2_client import R2Client
+from utils.salience import extract as extract_salience
 from parsers import parse as parse_source
 
 log = structlog.get_logger("processor")
@@ -129,7 +131,18 @@ class Pipeline:
         # 2. Parse → normalize.
         doc = parse_source(source, raw)
 
-        # 3. Chunk + embed.
+        # 3. Entity-link (scispaCy + UMLS, fallback regex). Merge into MeSH.
+        text_for_linking = f"{doc.get('title', '')}\n\n{doc.get('abstract', '')}"
+        entities = await asyncio.to_thread(link_entities, text_for_linking, 50)
+        doc["mesh_terms"] = merge_into_mesh(doc.get("mesh_terms", []), entities)
+
+        # 4. Salience hook (cheap, regex-based). Pre-computed at index
+        # time so result cards don't round-trip through an LLM.
+        salience = extract_salience(doc.get("study_type"), doc.get("abstract"))
+        if salience:
+            doc["salience"] = salience
+
+        # 5. Chunk + embed.
         chunks = chunk(
             f"{doc.get('title', '')}\n\n{doc.get('abstract', '')}",
             self.cfg.chunk_tokens,
@@ -140,23 +153,62 @@ class Pipeline:
             doc["embedding"] = mean_pool([e.vector for e in embeddings])
             doc["embedding_model"] = embeddings[0].model
 
-        # 4. Author × Open Payments fuzzy join.
+        # 6. Author × Open Payments fuzzy join.
         if self.joiner:
             year = _published_year(doc.get("published_at"))
+            max_payment = 0.0
+            has_coi = False
             for author in doc.get("authors", []):
                 affil = author.get("affiliation") or ""
                 state = _extract_state(affil)
                 matches, badge = await self.joiner.lookup(author.get("display_name", ""), state, year)
                 author["payments"] = [m.__dict__ for m in matches]
                 author["badge"] = badge.__dict__
+                if badge.has_payments:
+                    has_coi = True
+                    max_payment = max(max_payment, badge.total_payments_usd)
+            doc["has_coi_authors"] = has_coi
+            doc["max_author_payment_usd"] = max_payment
 
-        # 5. Publish IndexableDocEvent to indexer.
+        # 7. Predatory-journal flag (Beall list snapshot). Loaded lazily.
+        if doc.get("journal", {}).get("issn"):
+            doc["journal"]["is_predatory"] = _is_predatory(doc["journal"]["issn"])
+
+        # 8. Publish IndexableDocEvent to indexer.
         if self.nc:
             await self.nc.jetstream().publish(
                 f"indexable-docs.{source}",
                 json.dumps({"document": doc}).encode(),
             )
         log.debug("process.complete", source=source, doc_id=doc_id)
+
+
+# ---- Predatory-journal flag ----
+
+_PREDATORY_ISSNS: set[str] | None = None
+
+
+def _load_predatory_issns() -> set[str]:
+    """Lazy-load a one-line-per-ISSN snapshot of the Beall's list / Cabell's
+    blacklist. Snapshot lives at config/predatory_issns.txt; refresh via
+    a quarterly GHA cron."""
+    global _PREDATORY_ISSNS
+    if _PREDATORY_ISSNS is not None:
+        return _PREDATORY_ISSNS
+    from pathlib import Path
+    p = Path(__file__).resolve().parent.parent / "config" / "predatory_issns.txt"
+    if not p.exists():
+        _PREDATORY_ISSNS = set()
+        return _PREDATORY_ISSNS
+    _PREDATORY_ISSNS = {
+        line.strip() for line in p.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    return _PREDATORY_ISSNS
+
+
+def _is_predatory(issn: str) -> bool:
+    return issn in _load_predatory_issns()
 
 
 def _published_year(s: str | None) -> int | None:

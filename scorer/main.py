@@ -198,10 +198,53 @@ class ScorerCore:
         }
 
 
-# ---- gRPC bootstrap (proto-typed servicer commented out until codegen) ----
+# ---- gRPC bootstrap (proto-typed servicer wired against shim) ----
+
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "..", "proto", "gen", "python"))
+
+from evidencelens.v1 import (  # type: ignore[import]
+    PartialResults, ScoredResult as PbScoredResult, ScoreBreakdown,
+    Document as PbDocument, ScorerHealthzRequest, ScorerHealthzResponse,
+)
+from evidencelens.v1.scorer_grpc import (  # type: ignore[import]
+    ScorerServiceServicer,
+    add_ScorerServiceServicer_to_server,
+)
+
+
+class ScorerServicer(ScorerServiceServicer):
+    def __init__(self, core: ScorerCore) -> None:
+        self.core = core
+
+    async def Search(self, request, context):  # type: ignore[override]
+        filters = request.filters.__dict__ if hasattr(request.filters, "__dict__") else (request.filters or {})
+        async for wave_no, is_final, results in self.core.search(request.query, filters, request.top_k or 50):
+            pb_results = [
+                PbScoredResult(
+                    document=PbDocument(**{k: v for k, v in r["document"].items() if hasattr(PbDocument(), k)}),
+                    final_score=r["final_score"],
+                    breakdown=ScoreBreakdown(
+                        bm25_score=r["breakdown"]["bm25"],
+                        vector_score=r["breakdown"]["vector"],
+                        citation_pagerank=r["breakdown"]["citation_pagerank"],
+                        recency_score=r["breakdown"]["recency"],
+                        rrf_score=r["breakdown"]["rrf"],
+                        ltr_score=r["breakdown"]["ltr"],
+                        ltr_model_version=r["breakdown"]["ltr_model_version"],
+                    ),
+                )
+                for r in results
+            ]
+            yield PartialResults(results=pb_results, wave=wave_no, is_final=is_final)
+
+    async def Healthz(self, request, context):  # type: ignore[override]
+        return ScorerHealthzResponse(status="ok")
+
 
 async def serve(cfg: Config) -> grpc.aio.Server:
     server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=16))
+    add_ScorerServiceServicer_to_server(ScorerServicer(ScorerCore(cfg)), server)
     health_servicer = health.aio.HealthServicer()
     health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
     await health_servicer.set("evidencelens.v1.ScorerService", health.HealthCheckResponse.SERVING)

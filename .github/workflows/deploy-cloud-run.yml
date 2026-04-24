@@ -27,6 +27,20 @@ jobs:
           - open-payments
           - cochrane
           - guidelines
+          - core
+          - chembl
+          - omim
+          - hpo
+          - disgenet
+          - cdc-wonder
+          - ema
+          - mhra
+          - health-canada
+          - tga
+          - pmda
+          - nsf
+          - drugbank
+          - pmc-oa
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
