@@ -14,8 +14,8 @@ syntax = "proto3";
 
 package evidencelens.v1;
 
-import "google/protobuf/timestamp.proto";
 import "evidencelens/v1/document.proto";
+import "google/protobuf/timestamp.proto";
 
 // Published by ingesters to GCP Pub/Sub topic `raw-docs`. The payload
 // itself does not contain the document body — consumers fetch from R2 at

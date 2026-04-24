@@ -12,8 +12,8 @@ syntax = "proto3";
 
 package evidencelens.v1;
 
-import "google/protobuf/timestamp.proto";
 import "evidencelens/v1/document.proto";
+import "google/protobuf/timestamp.proto";
 
 service ScorerService {
   // Server-streaming search. The server emits multiple PartialResults
@@ -59,8 +59,8 @@ message SearchFilters {
   int32 published_year_max = 3;
 
   repeated string mesh_terms = 4;
-  repeated string sources = 5;        // e.g. ["pubmed", "ctgov"]
-  repeated string licenses = 6;       // e.g. ["CC-BY-4.0"]
+  repeated string sources = 5; // e.g. ["pubmed", "ctgov"]
+  repeated string licenses = 6; // e.g. ["CC-BY-4.0"]
 
   // If true, only include documents whose authors have at least one
   // matched Open Payments record. Used by COI-aware queries.
@@ -115,7 +115,7 @@ message ScoreBreakdown {
   double recency_score = 4;
   double rrf_score = 5;
   double ltr_score = 6;
-  string ltr_model_version = 7;       // e.g. "ltr_v3"
+  string ltr_model_version = 7; // e.g. "ltr_v3"
 }
 
 message ScorerHealthzRequest {}
