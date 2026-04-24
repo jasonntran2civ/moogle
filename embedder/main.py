@@ -175,9 +175,10 @@ class BatchedEmbedder:
 
 async def serve_grpc(model: SentenceTransformer, state: ModelState) -> grpc.aio.Server:
     server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=8))
-    # batcher = BatchedEmbedder(model, state)
-    # await batcher.start()
-    # embedder_pb2_grpc.add_EmbedderServiceServicer_to_server(EmbedderServicer(batcher), server)
+    global _GLOBAL_BATCHER
+    _GLOBAL_BATCHER = BatchedEmbedder(model, state)
+    await _GLOBAL_BATCHER.start()
+    # embedder_pb2_grpc.add_EmbedderServiceServicer_to_server(EmbedderServicer(_GLOBAL_BATCHER), server)
     # SERVICE_NAMES = (
     #     embedder_pb2.DESCRIPTOR.services_by_name["EmbedderService"].full_name,
     #     reflection.SERVICE_NAME,
@@ -196,7 +197,10 @@ async def serve_grpc(model: SentenceTransformer, state: ModelState) -> grpc.aio.
     return server
 
 
-# ---- HTTP healthz sidecar ----
+# ---- HTTP shim (healthz + /embed for clients without proto stubs) ----
+
+_GLOBAL_BATCHER: BatchedEmbedder | None = None
+
 
 def make_app(state: ModelState) -> FastAPI:
     app = FastAPI()
@@ -208,6 +212,19 @@ def make_app(state: ModelState) -> FastAPI:
             "model": state.name,
             "dim": state.dim,
             "detail": state.detail,
+        }
+
+    @app.post("/embed")
+    async def embed(body: dict) -> dict:
+        request_id = str(body.get("request_id", "anon"))
+        texts = list(body.get("texts", []))
+        if _GLOBAL_BATCHER is None:
+            return {"error": "batcher not ready"}
+        vectors = await _GLOBAL_BATCHER.embed(request_id, texts)
+        return {
+            "request_id": request_id,
+            "embeddings": [{"values": v, "dim": len(v)} for v in vectors],
+            "embedding_model": state.name,
         }
 
     return app

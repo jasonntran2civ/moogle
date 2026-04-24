@@ -12,6 +12,7 @@ import { RecallsModule } from "./recalls/recalls.module.js";
 import { LlmProxyModule } from "./llm-proxy/llm-proxy.module.js";
 import { AdminModule } from "./admin/admin.module.js";
 import { GatewayWebSocketModule } from "./ws/ws.module.js";
+import { ExperimentsModule } from "./experiments/experiments.module.js";
 import { HealthController } from "./health.controller.js";
 
 @Module({
@@ -34,6 +35,7 @@ import { HealthController } from "./health.controller.js";
     RecallsModule,
     LlmProxyModule,
     AdminModule,
+    ExperimentsModule,
     GatewayWebSocketModule,
   ],
   controllers: [HealthController],

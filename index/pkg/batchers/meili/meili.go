@@ -24,17 +24,27 @@ type Config struct {
 }
 
 type Batcher struct {
-	cfg    Config
-	client meilisearch.ServiceManager
-	in     chan json.RawMessage
-	wg     sync.WaitGroup
+	cfg      Config
+	client   meilisearch.ServiceManager
+	in       chan json.RawMessage
+	flushReq chan struct{}
+	wg       sync.WaitGroup
 }
 
 func New(cfg Config) (*Batcher, error) {
 	if cfg.BatchSize == 0 { cfg.BatchSize = 1000 }
 	if cfg.FlushAfterSeconds == 0 { cfg.FlushAfterSeconds = 5 }
 	c := meilisearch.New(cfg.URL, meilisearch.WithAPIKey(cfg.APIKey))
-	return &Batcher{cfg: cfg, client: c, in: make(chan json.RawMessage, cfg.BatchSize*2)}, nil
+	return &Batcher{
+		cfg: cfg, client: c,
+		in: make(chan json.RawMessage, cfg.BatchSize*2),
+		flushReq: make(chan struct{}, 1),
+	}, nil
+}
+
+// Flush requests a manual flush (wired to SIGUSR1 in indexer/cmd).
+func (b *Batcher) Flush() {
+	select { case b.flushReq <- struct{}{}: default: }
 }
 
 func (b *Batcher) Submit(doc json.RawMessage) {
@@ -77,6 +87,8 @@ func (b *Batcher) Run(ctx context.Context) {
 			flush()
 			return
 		case <-tick.C:
+			flush()
+		case <-b.flushReq:
 			flush()
 		case doc := <-b.in:
 			batch = append(batch, doc)

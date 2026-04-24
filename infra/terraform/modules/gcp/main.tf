@@ -134,6 +134,81 @@ resource "google_bigquery_table" "clicks" {
   deletion_protection = false
 }
 
+# ---- Pub/Sub -> BigQuery direct subscription (drains click-events) ----
+resource "google_pubsub_subscription" "clicks_to_bq" {
+  name    = "click-events.bigquery"
+  topic   = google_pubsub_topic.click_events.name
+  project = var.project
+  ack_deadline_seconds = 60
+
+  bigquery_config {
+    table             = "${var.project}.${google_bigquery_dataset.analytics.dataset_id}.${google_bigquery_table.clicks.table_id}"
+    use_table_schema  = true
+    write_metadata    = false
+    drop_unknown_fields = true
+  }
+
+  depends_on = [
+    google_bigquery_table.clicks,
+    google_project_iam_member.pubsub_bq_writer,
+  ]
+}
+
+# Pub/Sub service agent needs roles/bigquery.dataEditor + .metadataViewer
+data "google_project" "this" {
+  project_id = var.project
+}
+
+resource "google_project_iam_member" "pubsub_bq_writer" {
+  project = var.project
+  role    = "roles/bigquery.dataEditor"
+  member  = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+}
+
+resource "google_project_iam_member" "pubsub_bq_metadata_viewer" {
+  project = var.project
+  role    = "roles/bigquery.metadataViewer"
+  member  = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+}
+
+# ---- Materialized aggregates: daily clicks-by-variant + top-queries-7d ----
+resource "google_bigquery_table" "daily_clicks_by_variant" {
+  dataset_id = google_bigquery_dataset.analytics.dataset_id
+  table_id   = "daily_clicks_by_variant"
+  project    = var.project
+  schema = jsonencode([
+    { name = "day",            type = "DATE",      mode = "REQUIRED" },
+    { name = "variant",        type = "STRING",    mode = "NULLABLE" },
+    { name = "clicks",         type = "INT64",     mode = "REQUIRED" },
+    { name = "sessions",       type = "INT64",     mode = "REQUIRED" },
+    { name = "mean_position",  type = "FLOAT64",   mode = "NULLABLE" },
+  ])
+  deletion_protection = false
+}
+
+resource "google_bigquery_data_transfer_config" "daily_aggregate" {
+  display_name           = "EvidenceLens daily click aggregate"
+  data_source_id         = "scheduled_query"
+  schedule               = "every day 04:00"
+  destination_dataset_id = google_bigquery_dataset.analytics.dataset_id
+  project                = var.project
+  location               = "US"
+  params = {
+    query = <<-SQL
+      CREATE OR REPLACE TABLE analytics.daily_clicks_by_variant AS
+      SELECT
+        DATE(server_ts) AS day,
+        variant,
+        COUNT(*) AS clicks,
+        COUNT(DISTINCT session_id) AS sessions,
+        AVG(clicked_position) AS mean_position
+      FROM analytics.clicks
+      WHERE server_ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)
+      GROUP BY day, variant
+    SQL
+  }
+}
+
 # ---- Firestore (Native mode, default region per project) ----
 resource "google_firestore_database" "ab" {
   name        = "(default)"

@@ -44,6 +44,7 @@ class Pipeline:
         self.embedder = EmbedderClient(cfg.embedder_grpc_url)
         self.joiner: AuthorPaymentJoiner | None = None
         self._sem = asyncio.Semaphore(cfg.max_concurrent_pipelines)
+        self._sub = None
 
     async def setup(self) -> None:
         self.nc = await nats.connect(self.cfg.nats_url)
@@ -54,13 +55,46 @@ class Pipeline:
             self.cfg.cache_ttl_days,
             self.cfg.fuzzy_min_confidence,
         )
-        await self.nc.jetstream().subscribe(
+        self._sub = await self.nc.jetstream().subscribe(
             "raw-docs.>",
             cb=self._on_message,
             durable="processor",
             manual_ack=True,
         )
         log.info("processor subscribed", subject="raw-docs.>")
+        # Backpressure watcher: when the indexer's lag exceeds threshold,
+        # pause delivery from this subscription. Mirrors the spider
+        # backpressure pattern at services/spider/cmd/spider/main.go in
+        # the Moogle reference repo.
+        asyncio.create_task(self._backpressure_loop())
+
+    async def _backpressure_loop(self) -> None:
+        """Poll JetStream consumer info for `indexer`. If pending > cap,
+        drain (pause) our own delivery; resume when it drops."""
+        if not self.nc:
+            return
+        js = self.nc.jetstream()
+        max_pending = int(self.cfg.max_concurrent_pipelines * 4)
+        paused = False
+        while True:
+            await asyncio.sleep(5)
+            try:
+                info = await js.consumer_info("EVIDENCELENS", "indexer")
+                pending = info.num_pending
+                if pending > max_pending and not paused:
+                    log.warning("backpressure: pausing", indexer_pending=pending)
+                    if self._sub:
+                        await self._sub.drain()
+                    paused = True
+                elif pending <= max_pending // 2 and paused:
+                    log.info("backpressure: resuming", indexer_pending=pending)
+                    self._sub = await js.subscribe(
+                        "raw-docs.>", cb=self._on_message,
+                        durable="processor", manual_ack=True,
+                    )
+                    paused = False
+            except Exception as e:  # noqa: BLE001
+                log.debug("backpressure check skipped", err=str(e))
 
     async def teardown(self) -> None:
         if self.joiner:

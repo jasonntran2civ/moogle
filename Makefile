@@ -25,8 +25,7 @@ logs:
 	docker compose -f infra/docker-compose.yml logs -f --tail=100
 
 smoke:
-	@echo "TODO: implement end-to-end smoke (Stream E exit criterion)"
-	@exit 1
+	bash tests/integration/smoke_test.sh
 
 proto:
 	cd proto && buf lint && buf generate

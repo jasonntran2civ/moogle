@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { SkipNav } from "@/components/SkipNav";
 import { DisclaimerBanner } from "@/components/DisclaimerBanner";
+import { KeyboardHelp } from "@/components/KeyboardHelp";
 
 export const metadata: Metadata = {
   title: "EvidenceLens",
@@ -18,6 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <SkipNav />
         <DisclaimerBanner />
         <main id="main">{children}</main>
+        <KeyboardHelp />
       </body>
     </html>
   );

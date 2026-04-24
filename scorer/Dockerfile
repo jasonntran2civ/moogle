@@ -5,5 +5,7 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 COPY pyproject.toml ./
 RUN pip install uv && uv pip install --system .
 COPY . .
-EXPOSE 50052
-ENTRYPOINT ["python", "main.py"]
+EXPOSE 50052 8090
+# Run the HTTP shim alongside the gRPC server. supervisord-style:
+# the shim imports from main.py so a single process is enough.
+CMD ["sh", "-c", "python main.py & python http_server.py && wait"]

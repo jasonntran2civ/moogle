@@ -129,6 +129,19 @@ func main() {
 	}
 	defer consCtx.Stop()
 
+	// SIGUSR1 -> manual flush. Documented in
+	// docs/runbooks/indexer-dlq.md as the "force flush everything" hook.
+	flushSig := make(chan os.Signal, 1)
+	registerFlushSignal(flushSig)
+	go func() {
+		for range flushSig {
+			logger.Info("manual flush requested")
+			mb.Flush()
+			qb.Flush()
+			nb.Flush()
+		}
+	}()
+
 	logger.Info("indexer running")
 	<-ctx.Done()
 	logger.Info("indexer shutting down")

@@ -30,8 +30,10 @@ func main() {
 	citationsPub, _ := pubsubpub.New(ctx, ingestcommon.MustEnv("GCP_PROJECT"), ingestcommon.GetEnv("PUBSUB_TOPIC_CITATION_EDGES", "citation-edges"))
 	defer citationsPub.Close()
 
+	useBulk := ingestcommon.GetEnv("OPENALEX_USE_BULK", "false") == "true"
 	ing := openalex.New(openalex.Config{
 		MaxPerRun: ingestcommon.GetEnvInt("OPENALEX_MAX_PER_RUN", 10000),
+		UseBulk:   useBulk,
 	}, logger, wm, arch, pub, citationsPub)
 	runner := &ingestcommon.Runner{Source: "openalex", Logger: logger, Run: ing.Run}
 	if err := ingestcommon.ServeRun(ctx, runner); err != nil { logger.Error("http", "err", err) }

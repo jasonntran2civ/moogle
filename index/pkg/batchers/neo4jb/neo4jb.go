@@ -50,10 +50,11 @@ type docNode struct {
 }
 
 type Batcher struct {
-	cfg    Config
-	driver neo4j.DriverWithContext
-	in     chan docNode
-	wg     sync.WaitGroup
+	cfg      Config
+	driver   neo4j.DriverWithContext
+	in       chan docNode
+	flushReq chan struct{}
+	wg       sync.WaitGroup
 }
 
 func New(cfg Config) (*Batcher, error) {
@@ -63,7 +64,16 @@ func New(cfg Config) (*Batcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Batcher{cfg: cfg, driver: d, in: make(chan docNode, cfg.BatchSize*2)}, nil
+	return &Batcher{
+		cfg: cfg, driver: d,
+		in: make(chan docNode, cfg.BatchSize*2),
+		flushReq: make(chan struct{}, 1),
+	}, nil
+}
+
+// Flush requests a manual flush (wired to SIGUSR1 in indexer/cmd).
+func (b *Batcher) Flush() {
+	select { case b.flushReq <- struct{}{}: default: }
 }
 
 func (b *Batcher) Submit(raw json.RawMessage) {
@@ -131,6 +141,8 @@ func (b *Batcher) Run(ctx context.Context) {
 			flush()
 			return
 		case <-tick.C:
+			flush()
+		case <-b.flushReq:
 			flush()
 		case d := <-b.in:
 			batch = append(batch, d)
