@@ -6,9 +6,26 @@ on:
     paths:
       - "ingest/**"
       - ".github/workflows/deploy-cloud-run.yml"
+  workflow_dispatch:
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "${{ secrets.GCP_WIF_PROVIDER }}" ] && [ -n "${{ secrets.GCP_DEPLOY_SA }}" ] && [ -n "${{ secrets.GCP_PROJECT }}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::GCP secrets not configured; skipping Cloud Run deploy. See BLOCKERS.md."
+          fi
+
   deploy:
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
     runs-on: ubuntu-latest
     permissions: { contents: read, id-token: write }
     strategy:
@@ -44,7 +61,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: "1.23" }
+        with:
+          go-version: "1.23"
+          # No cache: directive on purpose. The Go module dependencies
+          # are downloaded fresh per matrix job; with 26 ingesters and
+          # one go.mod, the cache would thrash. Once go.sum is committed
+          # and stable, re-add `cache-dependency-path: ingest/go.sum`.
       - id: auth
         uses: google-github-actions/auth@v2
         with:

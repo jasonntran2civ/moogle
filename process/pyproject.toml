@@ -14,8 +14,6 @@ dependencies = [
     "httpx>=0.28.0",
     "lxml>=5.3.0",
     "rapidfuzz>=3.10.0",
-    "scispacy>=0.5.5",
-    "spacy>=3.7.0",
     "tiktoken>=0.8.0",
     "grpcio>=1.68.0",
     "protobuf>=5.28.0",
@@ -27,8 +25,21 @@ dependencies = [
     "opentelemetry-exporter-otlp>=1.28.0",
 ]
 
+# Heavy ML deps moved to extras so CI test installs stay under 1 GB.
+# Production NAS deploys install with `pip install .[ml]`.
 [project.optional-dependencies]
-dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0", "ruff>=0.7.0", "mypy>=1.13.0", "vcrpy>=6.0.0"]
+ml = [
+    "spacy>=3.7.0",
+    "scispacy>=0.5.5",
+    # scispaCy's en_core_sci_lg model is downloaded at runtime, not via pip.
+]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.7.0",
+    "mypy>=1.13.0",
+    "vcrpy>=6.0.0",
+]
 
 [tool.ruff]
 line-length = 100

@@ -6,11 +6,29 @@ on:
     paths:
       - "workers/**"
       - ".github/workflows/deploy-workers.yml"
+  workflow_dispatch:
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "${{ secrets.CF_ACCOUNT_ID }}" ] && [ -n "${{ secrets.CF_API_TOKEN }}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::CF_ACCOUNT_ID / CF_API_TOKEN not set; skipping worker deploy."
+          fi
+
   deploy:
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         worker: [pubsub-bridge, click-logger, webllm-shard, turnstile-verify]
     steps:
@@ -18,8 +36,8 @@ jobs:
       - uses: pnpm/action-setup@v4
         with: { version: 9 }
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: pnpm }
-      - run: pnpm install --frozen-lockfile
+        with: { node-version: 20 }
+      - run: pnpm install --no-frozen-lockfile
       - uses: cloudflare/wrangler-action@v3
         with:
           accountId: ${{ secrets.CF_ACCOUNT_ID }}

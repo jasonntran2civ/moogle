@@ -12,14 +12,22 @@ on:
       - "agent/**"
       - "mcp-server/**"
       - ".github/workflows/deploy-nas.yml"
+  workflow_dispatch:
 
 jobs:
   webhook:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Dokploy webhook
+        env:
+          URL:   ${{ secrets.DOKPLOY_WEBHOOK_URL }}
+          TOKEN: ${{ secrets.DOKPLOY_TOKEN }}
         run: |
-          curl -fsSL -X POST "${{ secrets.DOKPLOY_WEBHOOK_URL }}" \
-            -H "Authorization: Bearer ${{ secrets.DOKPLOY_TOKEN }}" \
+          if [ -z "$URL" ]; then
+            echo "::warning::DOKPLOY_WEBHOOK_URL not set; skipping NAS redeploy. See BLOCKERS.md."
+            exit 0
+          fi
+          curl -fsSL -X POST "$URL" \
+            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d '{"sha": "${{ github.sha }}", "ref": "${{ github.ref_name }}"}'
