@@ -19,6 +19,7 @@ import (
 	"github.com/evidencelens/evidencelens/ingest/pkg/pubsubpub"
 	"github.com/evidencelens/evidencelens/ingest/pkg/r2"
 	"github.com/evidencelens/evidencelens/ingest/pkg/watermark"
+	"github.com/nats-io/nats.go"
 )
 
 type Config struct {
@@ -29,18 +30,62 @@ type Config struct {
 }
 
 type Ingester struct {
-	cfg      Config
-	logger   *slog.Logger
-	wm       *watermark.Store
-	archiver *r2.Archiver
-	pub      *pubsubpub.Publisher
-	fetcher  *ingestcommon.Fetcher
+	cfg       Config
+	logger    *slog.Logger
+	wm        *watermark.Store
+	archiver  *r2.Archiver
+	pub       *pubsubpub.Publisher
+	fetcher   *ingestcommon.Fetcher
+	recallPub *nats.Conn
 }
 
 func New(cfg Config, logger *slog.Logger, wm *watermark.Store, arch *r2.Archiver, pub *pubsubpub.Publisher) *Ingester {
-	return &Ingester{
+	i := &Ingester{
 		cfg: cfg, logger: logger, wm: wm, archiver: arch, pub: pub,
 		fetcher: ingestcommon.NewFetcher(4, 8, "EvidenceLens-FDA/0.1 (mailto:contact@example.com)"),
+	}
+	if cfg.NATSURL != "" {
+		if nc, err := nats.Connect(cfg.NATSURL,
+			nats.MaxReconnects(-1),
+			nats.ReconnectWait(time.Second),
+		); err == nil {
+			i.recallPub = nc
+			logger.Info("fda recall priority lane connected", "nats", cfg.NATSURL)
+		} else {
+			logger.Warn("fda recall priority lane disabled (nats unreachable)", "err", err)
+		}
+	}
+	return i
+}
+
+// publishRecall tees a RecallEvent JSON to NATS subject `recall-fanout`.
+// Best-effort: failures are logged and never block the main publish path.
+func (i *Ingester) publishRecall(ctx context.Context, recallID string, r map[string]any) {
+	openfda, _ := r["openfda"].(map[string]any)
+	drugClass := ""
+	if cls, ok := openfda["pharm_class_epc"].([]any); ok && len(cls) > 0 {
+		if s, ok := cls[0].(string); ok {
+			drugClass = s
+		}
+	}
+	productName := ""
+	if v, ok := r["product_description"].(string); ok {
+		productName = v
+	}
+	recallClass := ""
+	if v, ok := r["classification"].(string); ok {
+		recallClass = v
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"recall_id":    recallID,
+		"agency":       "fda",
+		"product_name": productName,
+		"drug_class":   drugClass,
+		"recall_class": recallClass,
+		"emitted_at":   time.Now().UTC().Format(time.RFC3339),
+	})
+	if err := i.recallPub.Publish("recall-fanout", payload); err != nil {
+		i.logger.Warn("recall-fanout publish failed", "recall_id", recallID, "err", err)
 	}
 }
 
@@ -96,8 +141,12 @@ func (i *Ingester) Run(ctx context.Context) (ingestcommon.RunResult, error) {
 				if _, err := i.pub.PublishRaw(ctx, source, id, key); err == nil {
 					counters.Published.Add(1)
 				}
-				// TODO recall priority lane: publish RecallEvent to NATS recall-fanout.
-				_ = isRecall
+				// Recall priority lane: tee a RecallEvent into the
+				// recall-fanout NATS bridge so the gateway WS subscribers
+				// see it within the spec section 14.1 1-min E2E SLO.
+				if isRecall && i.recallPub != nil {
+					i.publishRecall(ctx, id, r)
+				}
 			}
 			skip += len(resp.Results)
 		}

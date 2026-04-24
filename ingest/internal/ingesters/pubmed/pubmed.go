@@ -3,19 +3,26 @@
 // API: NCBI E-utilities (esearch + efetch).
 // Watermark: PubMed EDAT (entry date), ISO-8601 string.
 // Concurrency: 10 in-flight requests, NCBI rate limit 10/sec with API key.
-// First run: TODO bulk-baseline FTP fetch from ftp.ncbi.nlm.nih.gov/pubmed/baseline/.
-//   Current implementation pages through esearch+efetch from Unix epoch.
+// First run: env PUBMED_BULK_BASELINE=true switches the run() to a
+//   bulk-baseline FTP fetch from ftp.ncbi.nlm.nih.gov/pubmed/baseline/.
+//   Default behavior (env unset) caps the first run to a 7-day lookback
+//   so a stray invocation doesn't try to ingest 38M records.
 //
 // This is the reference ingester — every other ingester follows the same
 // shape (Config + Run(ctx) returning RunResult).
 package pubmed
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -73,7 +80,12 @@ func (i *Ingester) Run(ctx context.Context) (ingestcommon.RunResult, error) {
 		return ingestcommon.RunResult{}, err
 	}
 	if hwm == "" {
-		// First run: cap to last 7 days for sanity; bulk baseline is a TODO.
+		if ingestcommon.GetEnv("PUBMED_BULK_BASELINE", "") == "true" {
+			i.logger.Info("first run: bulk baseline FTP path enabled")
+			return i.runBaseline(ctx)
+		}
+		// Default first-run behavior: 7-day lookback so a stray invocation
+		// doesn't try to ingest 38M records via E-utilities.
 		hwm = time.Now().AddDate(0, 0, -7).Format("2006/01/02")
 		i.logger.Info("first run; using 7-day lookback", "from", hwm)
 	}
@@ -150,6 +162,86 @@ func (i *Ingester) Run(ctx context.Context) (ingestcommon.RunResult, error) {
 		DocsPublished: counters.Published.Load(),
 		HighWatermark: newHWM,
 	}, nil
+}
+
+// runBaseline streams the NCBI baseline FTP files. Each file is a
+// gzipped XML PubmedArticleSet covering ~30k articles. We stream over
+// HTTP from https://ftp.ncbi.nlm.nih.gov/pubmed/baseline/ (NCBI exposes
+// the FTP tree via HTTPS), gunzip on the fly, splitArticles, archive +
+// publish. PUBMED_BASELINE_MAX_FILES caps work per /run so Cloud Run
+// doesn't time out.
+func (i *Ingester) runBaseline(ctx context.Context) (ingestcommon.RunResult, error) {
+	const indexURL = "https://ftp.ncbi.nlm.nih.gov/pubmed/baseline/"
+	indexBody, err := i.fetcher.Get(ctx, indexURL, nil)
+	if err != nil {
+		return ingestcommon.RunResult{}, fmt.Errorf("baseline index: %w", err)
+	}
+	files := parseFTPIndex(indexBody)
+	cap := ingestcommon.GetEnvInt("PUBMED_BASELINE_MAX_FILES", 5)
+	if cap > 0 && len(files) > cap {
+		files = files[:cap]
+	}
+
+	hwm, _ := i.wm.Get(ctx, "pubmed")
+	var counters ingestcommon.Counters
+	for _, fname := range files {
+		if hwm != "" && fname <= hwm {
+			continue
+		}
+		body, err := i.fetcher.Get(ctx, indexURL+fname, nil)
+		if err != nil {
+			i.logger.Warn("baseline fetch", "file", fname, "err", err)
+			continue
+		}
+		gz, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			continue
+		}
+		xmlBody, err := io.ReadAll(gz)
+		gz.Close()
+		if err != nil {
+			continue
+		}
+		records, _ := splitArticles(xmlBody)
+		for _, raw := range records {
+			counters.Fetched.Add(1)
+			key, err := i.archiver.Put(ctx, "pubmed", raw.PMID, raw.Bytes)
+			if err != nil {
+				counters.Failed.Add(1)
+				continue
+			}
+			counters.Archived.Add(1)
+			if _, err := i.pub.PublishRaw(ctx, "pubmed", raw.PMID, key); err == nil {
+				counters.Published.Add(1)
+			}
+		}
+		hwm = fname
+		_ = i.wm.Set(ctx, "pubmed", hwm, "running", "")
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	_ = i.wm.Set(ctx, "pubmed", hwm, "idle", "")
+	return ingestcommon.RunResult{
+		DocsFetched:   counters.Fetched.Load(),
+		DocsArchived:  counters.Archived.Load(),
+		DocsPublished: counters.Published.Load(),
+		HighWatermark: hwm,
+	}, nil
+}
+
+// parseFTPIndex extracts pubmedNN.xml.gz filenames from the NCBI HTTPS
+// directory listing.
+var ftpFileRE = regexp.MustCompile(`href="(pubmed\d+n\d+\.xml\.gz)"`)
+
+func parseFTPIndex(body []byte) []string {
+	matches := ftpFileRE.FindAllSubmatch(body, -1)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, string(m[1]))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ---- E-utilities calls ----
