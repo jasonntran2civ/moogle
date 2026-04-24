@@ -24,7 +24,7 @@ See [docs/architecture.md](docs/architecture.md) for the full diagram.
 
 ## Cost
 
-Total recurring: **≤ $15/year** (domain only). Everything else runs on free tiers (Cloudflare, GCP, Grafana Cloud, Sentry, PostHog, GitHub Actions) plus the maintainer's existing TrueNAS NAS and Dokploy VPS. See [BUILT-WITH.md](BUILT-WITH.md) for a complete list with thanks.
+Total recurring: **$0/year**. Frontend served at `evidencelens.pages.dev` (Cloudflare Pages auto-subdomain), MCP at `mcp-evidencelens.<account>.workers.dev`, gateway via Cloudflare Tunnel from TrueNAS — all under free tiers (Cloudflare, GCP, Grafana Cloud, Sentry, PostHog, GitHub Actions). Custom domain intentionally skipped to keep recurring cost at zero. See [BUILT-WITH.md](BUILT-WITH.md) for a complete list with thanks.
 
 ## License
 

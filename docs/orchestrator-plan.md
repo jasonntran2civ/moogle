@@ -10,9 +10,10 @@
 
 **Confirmed decisions.**
 - Greenfield repo at `c:\Trusted\evidencelens\`. `c:\Trusted\EvidenceLens0\` is ignored entirely (separate single-commit MVP-0; not reused, not deleted).
-- Cost ceiling: ≤ $15/year recurring (domain only). All other infra free-tier on user's existing TrueNAS + Dokploy VPS + Tailscale + Cloudflare account.
+- Cost ceiling: **$0/year recurring**. User opted for free subdomains (`evidencelens.pages.dev`, `*.workers.dev`) instead of custom domain — no registrar bill at all. All other infra free-tier on user's existing TrueNAS + Dokploy VPS + Tailscale + Cloudflare account.
 - Dispatch posture: sequential streams; parallelism reserved for the 12 ingesters and the 4 scorer sub-services where work is genuinely independent.
 - Full system from day one — no MVP phasing — per spec anti-goals.
+- Account state (2026-04-24): only Cloudflare confirmed ready. GCP, Grafana, Sentry, PostHog provisioning is user-blocked — see [account-checklist.md](account-checklist.md). Stream A scaffolding can proceed locally; deploys wait on user.
 
 **Scope-defining numbers from the spec.** 9 work streams (A–I), 12 ingesters, ~32 data sources catalog, 4 Cloudflare Workers, 5 NAS data services (Postgres, NATS JetStream, Meilisearch, Qdrant, Neo4j), 3 Dokploy services (gateway, agent, MCP), 1 Cloudflare Pages frontend, 1 GPU embedder, full OTel + Sentry + PostHog instrumentation, WCAG 2.2 AA. SLOs: search p95 ≤ 800ms, indexer lag ≤ 5min, recall fanout ≤ 1min, LCP ≤ 2.0s p75. Capacity floor: 5 QPS sustained / 50 burst / 500 docs-per-sec indexing.
 
@@ -88,9 +89,9 @@ Initial commit: scaffold only, no logic. Push to fresh public repo `evidencelens
 
 ### Stream A — Platform & Infra (Week 1)
 
-Provision free-tier accounts, buy domain, Terraform skeleton, sops + age secrets, NAS Docker stack (Postgres 16, NATS JetStream 2.11, Meilisearch 1.13, Qdrant 1.12, Neo4j 5 Community, OTel Collector, Prometheus, Loki agent), local dev compose, Cloudflare Pages stub, CI scaffold.
+Provision free-tier accounts (per [account-checklist.md](account-checklist.md) — user-blocked except Cloudflare), Terraform skeleton, sops + age secrets, NAS Docker stack (Postgres 16, NATS JetStream 2.11, Meilisearch 1.13, Qdrant 1.12, Neo4j 5 Community, OTel Collector, Prometheus, Loki agent), local dev compose, Cloudflare Pages stub at `evidencelens.pages.dev`, CI scaffold.
 
-**Done when:** `terraform plan` clean; NAS compose all healthy; Cloudflare Pages serves placeholder over HTTPS at apex; CI green on no-op PR.
+**Done when:** `terraform plan` clean; NAS compose all healthy; Cloudflare Pages serves placeholder over HTTPS at `evidencelens.pages.dev`; CI green on no-op PR.
 
 ### Stream B — Shared Schemas & Interfaces (Week 1, **freeze EOW1**)
 
@@ -165,7 +166,7 @@ Nightly CI E2E. Eval drift check posts nDCG drift > 1% as PR comment. k6 nightly
 
 ## Escalation triggers
 
-I escalate to user (write `docs/escalations/{date}-{slug}.md`, pause stream) when: cost overrun unavoidable, spec inconsistency, `[ORCHESTRATOR DECISION]` needs benchmarking, source ToS changed, free-tier deprecated/capped below spec, irreversible action needed, fuzzy-join false-positive rate > 5%, WebLLM model > 2GB compressed.
+I escalate to user (write `docs/escalations/{date}-{slug}.md`, pause stream) when: cost overrun unavoidable (any non-zero recurring), spec inconsistency, `[ORCHESTRATOR DECISION]` needs benchmarking, source ToS changed, free-tier deprecated/capped below spec, irreversible action needed, fuzzy-join false-positive rate > 5%, WebLLM model > 2GB compressed.
 
 ---
 
@@ -173,7 +174,7 @@ I escalate to user (write `docs/escalations/{date}-{slug}.md`, pause stream) whe
 
 - No MVP phasing.
 - No user accounts / personalization.
-- No paid services beyond domain.
+- No paid services. (Domain skipped: free subdomain only.)
 - No mobile native app.
 - No ship without WCAG 2.2 AA.
 - No ship without OTel on every service.

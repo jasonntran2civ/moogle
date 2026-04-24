@@ -1,0 +1,498 @@
+openapi: 3.1.0
+info:
+  title: EvidenceLens HTTP API
+  version: 1.0.0
+  summary: Free, public, agentic biomedical evidence search engine
+  description: |
+    REST API served by the EvidenceLens query-gateway. Mirrors the
+    GraphQL surface (`/graphql`) and the WebSocket surface (`/ws`).
+    Public, unauthenticated, rate-limited per IP.
+
+    **Source of truth:** [`docs/EVIDENCELENS_SPEC.md` §5.6](../EVIDENCELENS_SPEC.md).
+    Any change requires an `rfc-interface` PR
+    ([docs/rfcs/README.md](../rfcs/README.md)).
+
+    **Rate limits per IP:**
+    - 60 requests/min on `/api/*`
+    - 10 simultaneous WebSocket connections on `/ws`
+    - 30 requests/min on `/llm/*`
+
+    Over-limit responses are `429 Too Many Requests` with `Retry-After`.
+  license:
+    name: MIT
+    identifier: MIT
+  contact:
+    name: EvidenceLens
+    url: https://evidencelens.pages.dev
+
+servers:
+  - url: https://gateway-evidencelens.{account}.workers.dev
+    description: Production (Cloudflare Tunnel egress from TrueNAS)
+    variables:
+      account:
+        default: example
+        description: Cloudflare account subdomain
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: search
+    description: Hybrid ranked search
+  - name: document
+    description: Single-record fetch
+  - name: trials
+    description: Clinical trial registry
+  - name: recalls
+    description: FDA / EMA recall surveillance
+  - name: llm
+    description: BYOK LLM proxy (no key storage)
+  - name: tool
+    description: Tool endpoints called by agent / MCP server
+  - name: meta
+    description: Health, version, license info
+
+paths:
+  /api/search:
+    get:
+      tags: [search]
+      summary: Synchronous hybrid search
+      description: |
+        Returns the final wave (post-LTR rerank). For streaming waves,
+        use `WS /ws` event `search` (see
+        [websocket.md](websocket.md)) or `GraphQL Subscription
+        searchStream`.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: {type: string}
+          example: sglt2 inhibitors heart failure
+        - name: filters
+          in: query
+          schema: {type: string}
+          description: URL-encoded JSON `SearchFiltersInput`
+        - name: top_k
+          in: query
+          schema: {type: integer, default: 50, maximum: 200}
+        - name: variant
+          in: query
+          schema: {type: string}
+          description: A/B variant assignment from Firestore (set by frontend)
+        - name: session_id
+          in: query
+          schema: {type: string}
+          description: Anonymous session id for click attribution
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResult'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/document/{id}:
+    get:
+      tags: [document]
+      summary: Fetch one document by canonical id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+          example: pubmed:12345678
+      responses:
+        '200':
+          description: Document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/trials:
+    get:
+      tags: [trials]
+      summary: Filtered trial search
+      parameters:
+        - {name: condition, in: query, schema: {type: string}}
+        - {name: location, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string}, description: "recruiting | completed | terminated | ..."}
+        - {name: phase, in: query, schema: {type: string}}
+        - {name: top_k, in: query, schema: {type: integer, default: 50, maximum: 200}}
+      responses:
+        '200':
+          description: Trial documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Document'}
+
+  /api/recalls/recent:
+    get:
+      tags: [recalls]
+      summary: Recent recall events
+      parameters:
+        - {name: since_days, in: query, schema: {type: integer, default: 30}}
+        - {name: drug_class, in: query, schema: {type: string}}
+        - {name: product_name, in: query, schema: {type: string}}
+        - {name: top_k, in: query, schema: {type: integer, default: 20, maximum: 200}}
+      responses:
+        '200':
+          description: Recall events
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/RecallEvent'}
+
+  /llm/models:
+    get:
+      tags: [llm]
+      summary: List supported BYOK providers
+      responses:
+        '200':
+          description: Provider catalog
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/LlmProvider'}
+
+  /llm/synthesize:
+    post:
+      tags: [llm]
+      summary: BYOK LLM proxy with SSE streaming
+      description: |
+        The visitor's API key is sent in the `Authorization` header and
+        proxied directly to their chosen provider. EvidenceLens never
+        stores the key. Token / latency telemetry is recorded keyless in
+        Postgres `byok_proxy_telemetry`. Cloudflare Turnstile token
+        required for unauthenticated calls (`X-Turnstile-Token` header).
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          schema: {type: string}
+          description: '`Bearer <visitor-api-key>` for the chosen provider'
+        - name: X-Turnstile-Token
+          in: header
+          required: true
+          schema: {type: string}
+        - name: X-Provider
+          in: header
+          required: true
+          schema: {type: string, enum: [anthropic, openai, groq, openrouter, together, deepinfra, ollama]}
+        - name: X-Model
+          in: header
+          schema: {type: string}
+          description: Provider-specific model id; falls back to provider default
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SynthesizeRequest'
+      responses:
+        '200':
+          description: SSE stream of `data:` events with provider-shaped chunks
+          content:
+            text/event-stream:
+              schema: {type: string}
+        '401':
+          description: Invalid BYOK key
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/tool/{name}:
+    post:
+      tags: [tool]
+      summary: Tool dispatch endpoint for agent + MCP
+      description: |
+        Internal route used by `agent-service` (BYOK tool-use loop) and
+        `mcp-server` (MCP tool-call dispatch) to invoke gateway-side
+        functions. Each tool name maps to a SearchModule / DocumentModule
+        operation; full catalog in `mcp-server/src/tools.ts`.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+            enum:
+              - search_evidence
+              - get_paper
+              - get_trial
+              - get_trials_by_condition
+              - get_recent_recalls
+              - get_author_payments
+              - get_citation_neighborhood
+              - evaluate_evidence_quality
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200':
+          description: Tool result
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+
+  /healthz:
+    get:
+      tags: [meta]
+      summary: Liveness probe
+      responses:
+        '200':
+          description: Healthy
+
+  /readyz:
+    get:
+      tags: [meta]
+      summary: Readiness probe (checks downstream gRPC services)
+      responses:
+        '200':
+          description: Ready
+        '503':
+          description: One or more dependencies unavailable
+
+components:
+  responses:
+    NotFound:
+      description: Not found
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            properties:
+              type: {type: string}
+              title: {type: string}
+              status: {type: integer, example: 404}
+              detail: {type: string}
+    RateLimited:
+      description: Too many requests
+      headers:
+        Retry-After:
+          schema: {type: integer}
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            properties:
+              type: {type: string}
+              title: {type: string}
+              status: {type: integer, example: 429}
+              detail: {type: string}
+
+  schemas:
+    # Mirrors GraphQL types and proto messages. Names kept in lockstep.
+    SearchResult:
+      type: object
+      required: [query, results, totalEstimated, elapsedMs]
+      properties:
+        query: {type: string}
+        results:
+          type: array
+          items: {$ref: '#/components/schemas/ScoredResult'}
+        totalEstimated: {type: integer}
+        variant: {type: string}
+        elapsedMs: {type: integer}
+
+    ScoredResult:
+      type: object
+      required: [document, finalScore, breakdown]
+      properties:
+        document: {$ref: '#/components/schemas/Document'}
+        finalScore: {type: number, format: double}
+        breakdown: {$ref: '#/components/schemas/ScoreBreakdown'}
+
+    ScoreBreakdown:
+      type: object
+      properties:
+        bm25: {type: number}
+        vector: {type: number}
+        citationPagerank: {type: number}
+        recency: {type: number}
+        rrf: {type: number}
+        ltr: {type: number}
+        ltrModelVersion: {type: string}
+
+    Document:
+      type: object
+      required: [id, source, sourceNativeId, title, abstract, canonicalUrl, ingestedAt, license, authors, studyType, citationCount, citationPagerank]
+      properties:
+        id: {type: string}
+        source: {type: string}
+        sourceNativeId: {type: string}
+        doi: {type: string}
+        pmid: {type: string}
+        pmcid: {type: string}
+        nctId: {type: string}
+        ictrpId: {type: string}
+        title: {type: string}
+        abstract: {type: string}
+        fullText: {type: string}
+        canonicalUrl: {type: string, format: uri}
+        ingestedAt: {type: string, format: date-time}
+        sourceUpdatedAt: {type: string, format: date-time}
+        publishedAt: {type: string, format: date-time}
+        license: {type: string}
+        authors:
+          type: array
+          items: {$ref: '#/components/schemas/Author'}
+        studyType:
+          type: string
+          enum: [RCT, META_ANALYSIS, SYSTEMATIC_REVIEW, OBSERVATIONAL, CASE_REPORT, PREPRINT, TRIAL_REGISTRY, REGULATORY, GUIDELINE, REVIEW, EDITORIAL, OTHER]
+        meshTerms:
+          type: array
+          items: {type: string}
+        keywords:
+          type: array
+          items: {type: string}
+        journal: {$ref: '#/components/schemas/Journal'}
+        trial: {$ref: '#/components/schemas/Trial'}
+        regulatory: {$ref: '#/components/schemas/Regulatory'}
+        citationCount: {type: integer}
+        citationPagerank: {type: number}
+        funding:
+          type: array
+          items: {$ref: '#/components/schemas/FundingSource'}
+        hasCoiAuthors: {type: boolean}
+        maxAuthorPaymentUsd: {type: number}
+        embeddingModel: {type: string}
+
+    Author:
+      type: object
+      required: [displayName, payments, badge]
+      properties:
+        displayName: {type: string}
+        givenName: {type: string}
+        familyName: {type: string}
+        orcid: {type: string}
+        affiliation: {type: string}
+        payments:
+          type: array
+          items: {$ref: '#/components/schemas/AuthorPayment'}
+        badge: {$ref: '#/components/schemas/AuthorBadge'}
+
+    AuthorBadge:
+      type: object
+      required: [hasPayments, totalPaymentsUsd, paymentsLastYear, yearsCovered]
+      properties:
+        hasPayments: {type: boolean}
+        totalPaymentsUsd: {type: number}
+        topSponsor: {type: string}
+        topSponsorAmountUsd: {type: number}
+        paymentsLastYear: {type: integer}
+        yearsCovered:
+          type: array
+          items: {type: string}
+
+    AuthorPayment:
+      type: object
+      required: [sponsorName, year, amountUsd, paymentType, sourceRecordId]
+      properties:
+        sponsorName: {type: string}
+        year: {type: string}
+        amountUsd: {type: number}
+        paymentType:
+          type: string
+          enum: [consulting, honoraria, research, travel, ownership, other]
+        sourceRecordId: {type: string}
+
+    Journal:
+      type: object
+      required: [name, isPredatory]
+      properties:
+        name: {type: string}
+        issn: {type: string}
+        publisher: {type: string}
+        impactFactor: {type: number}
+        isPredatory: {type: boolean}
+
+    Trial:
+      type: object
+      required: [registry, status, phase, conditions, interventions, locations]
+      properties:
+        registry: {type: string}
+        status: {type: string}
+        phase: {type: string}
+        conditions:
+          type: array
+          items: {type: string}
+        interventions:
+          type: array
+          items: {type: string}
+        locations:
+          type: array
+          items: {type: string}
+        enrollment: {type: integer}
+        startDate: {type: string, format: date-time}
+        completionDate: {type: string, format: date-time}
+        primaryOutcome: {type: string}
+
+    Regulatory:
+      type: object
+      required: [agency, eventType, productName]
+      properties:
+        agency: {type: string}
+        eventType: {type: string, enum: [approval, recall, adverse_event, 510k_clearance, label_update]}
+        productName: {type: string}
+        drugClass: {type: string}
+        recallClass: {type: string, enum: [I, II, III]}
+        reason: {type: string}
+        action: {type: string}
+
+    FundingSource:
+      type: object
+      required: [funder]
+      properties:
+        funder: {type: string}
+        grantId: {type: string}
+        amountUsd: {type: number}
+        fiscalYear: {type: string}
+
+    RecallEvent:
+      type: object
+      required: [recallId, agency, productName, recallClass, emittedAt]
+      properties:
+        recallId: {type: string}
+        agency: {type: string}
+        productName: {type: string}
+        drugClass: {type: string}
+        recallClass: {type: string, enum: [I, II, III]}
+        emittedAt: {type: string, format: date-time}
+
+    LlmProvider:
+      type: object
+      required: [id, displayName, apiShape, supportsPromptCaching, defaultModel, models]
+      properties:
+        id: {type: string, enum: [anthropic, openai, groq, openrouter, together, deepinfra, ollama]}
+        displayName: {type: string}
+        apiShape: {type: string, enum: [anthropic, openai_compatible, ollama]}
+        supportsPromptCaching: {type: boolean}
+        defaultModel: {type: string}
+        models:
+          type: array
+          items: {type: string}
+        setupUrl: {type: string, format: uri}
+
+    SynthesizeRequest:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          description: Provider-shape messages (Anthropic or OpenAI-compatible)
+          items: {type: object, additionalProperties: true}
+        tools:
+          type: array
+          description: Optional MCP-shape tool definitions to enable in this turn
+          items: {type: object, additionalProperties: true}
+        sessionId: {type: string}
+        variant: {type: string}
