@@ -68,8 +68,12 @@ jobs:
           version: latest
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Generate Go proto stubs (proto/gen/go is not committed)
-        working-directory: proto
-        run: buf generate
+        run: |
+          cd proto && buf generate
+          cd gen/go
+          # buf generate emits *.pb.go but no go.mod; create one so go.work resolves.
+          printf 'module github.com/evidencelens/evidencelens/proto/gen/go\n\ngo 1.23\n' > go.mod
+          go mod tidy
       - name: go mod download (creates go.sum if missing)
         working-directory: ${{ matrix.module }}
         run: |
