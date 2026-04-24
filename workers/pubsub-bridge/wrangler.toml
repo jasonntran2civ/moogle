@@ -1,0 +1,11 @@
+name = "pubsub-bridge"
+main = "src/index.ts"
+compatibility_date = "2025-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+GCP_PROJECT = "evidencelens-prod"
+NATS_WS_URL = "wss://nats.evidencelens.internal:443"
+
+# Service-account credentials for GCP Pub/Sub publish are stored as a
+# Workers secret: `wrangler secret put GCP_SA_JSON`.

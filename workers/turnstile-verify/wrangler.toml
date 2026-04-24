@@ -1,0 +1,5 @@
+name = "turnstile-verify"
+main = "src/index.ts"
+compatibility_date = "2025-01-15"
+
+# `wrangler secret put TURNSTILE_SECRET` for the site secret.

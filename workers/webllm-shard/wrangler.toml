@@ -1,0 +1,7 @@
+name = "webllm-shard"
+main = "src/index.ts"
+compatibility_date = "2025-01-15"
+
+[[r2_buckets]]
+binding = "WEBLLM"
+bucket_name = "evidencelens-webllm"
