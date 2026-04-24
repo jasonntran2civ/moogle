@@ -1,0 +1,15 @@
+name: evidencelens-indexer
+
+services:
+  indexer:
+    build: .
+    image: ghcr.io/evidencelens/indexer:latest
+    restart: unless-stopped
+    env_file: ../infra/.env
+    environment:
+      OTEL_SERVICE_NAME: indexer
+    networks: [evidencelens]
+
+networks:
+  evidencelens:
+    external: true
