@@ -62,7 +62,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: "1.23" }
+        with: { go-version: "1.24" }
       - uses: bufbuild/buf-setup-action@v1
         with:
           version: latest
@@ -72,7 +72,7 @@ jobs:
           cd proto && buf generate
           cd gen/go
           # buf generate emits *.pb.go but no go.mod; create one so go.work resolves.
-          printf 'module github.com/evidencelens/evidencelens/proto/gen/go\n\ngo 1.23\n' > go.mod
+          printf 'module github.com/evidencelens/evidencelens/proto/gen/go\n\ngo 1.24\n' > go.mod
           go mod tidy
       - name: go mod download (creates go.sum if missing)
         working-directory: ${{ matrix.module }}
