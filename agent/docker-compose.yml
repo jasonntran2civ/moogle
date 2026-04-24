@@ -1,0 +1,16 @@
+name: evidencelens-agent
+services:
+  agent:
+    build:
+      context: ..
+      dockerfile: agent/Dockerfile
+    image: ghcr.io/evidencelens/agent:latest
+    restart: unless-stopped
+    env_file: ../infra/.env
+    environment:
+      OTEL_SERVICE_NAME: agent
+    ports: ["8081:8081"]
+    networks: [evidencelens]
+networks:
+  evidencelens:
+    external: true

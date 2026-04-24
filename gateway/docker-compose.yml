@@ -1,0 +1,15 @@
+name: evidencelens-gateway
+services:
+  gateway:
+    build: ..
+    image: ghcr.io/evidencelens/gateway:latest
+    restart: unless-stopped
+    env_file: ../infra/.env
+    environment:
+      OTEL_SERVICE_NAME: gateway
+      AGENT_URL: http://agent:8081/synthesize
+    ports: ["8080:8080"]
+    networks: [evidencelens]
+networks:
+  evidencelens:
+    external: true

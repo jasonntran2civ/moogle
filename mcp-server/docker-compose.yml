@@ -1,0 +1,16 @@
+name: evidencelens-mcp
+services:
+  mcp:
+    build: .
+    image: ghcr.io/evidencelens/mcp-server:latest
+    restart: unless-stopped
+    env_file: ../infra/.env
+    environment:
+      MCP_TRANSPORT: http
+      MCP_PORT: "8082"
+      GATEWAY_URL: http://gateway:8080
+    ports: ["8082:8082"]
+    networks: [evidencelens]
+networks:
+  evidencelens:
+    external: true

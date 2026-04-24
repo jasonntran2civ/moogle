@@ -1,0 +1,13 @@
+name: evidencelens-scorer
+services:
+  scorer:
+    build: .
+    image: ghcr.io/evidencelens/scorer:latest
+    restart: unless-stopped
+    env_file: ../infra/.env
+    environment:
+      OTEL_SERVICE_NAME: scorer
+    networks: [evidencelens]
+networks:
+  evidencelens:
+    external: true
