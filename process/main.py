@@ -1,0 +1,202 @@
+"""
+Processor entry point (spec §5.2).
+
+Subscribes to NATS `raw-docs.>` (forwarded from Pub/Sub by the
+pubsub-bridge Worker), runs each event through the pipeline:
+
+  parse → normalize → entity-link → chunk → embed → COI-join → publish
+
+50 concurrent pipelines. Backpressure: if NATS publish lag exceeds a
+threshold, pause Pub/Sub pull (mirrors Moogle spider backpressure).
+
+Lifts service-skeleton pattern from Moogle indexer/main.py: signal
+handlers + handle_exit + structured slog (here structlog).
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import signal
+from contextlib import suppress
+
+import asyncpg
+import nats
+import structlog
+import uvicorn
+from fastapi import FastAPI
+
+from utils.author_payment_joiner import AuthorPaymentJoiner
+from utils.chunker import chunk, mean_pool
+from utils.config import Config
+from utils.embedder_client import EmbedderClient
+from utils.r2_client import R2Client
+from parsers import parse as parse_source
+
+log = structlog.get_logger("processor")
+
+
+class Pipeline:
+    def __init__(self, cfg: Config) -> None:
+        self.cfg = cfg
+        self.nc: nats.NATS | None = None
+        self.pool: asyncpg.Pool | None = None
+        self.r2 = R2Client(cfg.r2_endpoint, cfg.r2_access_key, cfg.r2_secret_key, cfg.r2_bucket)
+        self.embedder = EmbedderClient(cfg.embedder_grpc_url)
+        self.joiner: AuthorPaymentJoiner | None = None
+        self._sem = asyncio.Semaphore(cfg.max_concurrent_pipelines)
+
+    async def setup(self) -> None:
+        self.nc = await nats.connect(self.cfg.nats_url)
+        self.pool = await asyncpg.create_pool(self.cfg.pg_dsn, min_size=2, max_size=20)
+        self.joiner = AuthorPaymentJoiner(
+            self.pool,
+            self.cfg.open_payments_lookup_url,
+            self.cfg.cache_ttl_days,
+            self.cfg.fuzzy_min_confidence,
+        )
+        await self.nc.jetstream().subscribe(
+            "raw-docs.>",
+            cb=self._on_message,
+            durable="processor",
+            manual_ack=True,
+        )
+        log.info("processor subscribed", subject="raw-docs.>")
+
+    async def teardown(self) -> None:
+        if self.joiner:
+            await self.joiner.close()
+        if self.nc:
+            await self.nc.close()
+        if self.pool:
+            await self.pool.close()
+        await self.embedder.close()
+
+    async def _on_message(self, msg) -> None:
+        async with self._sem:
+            try:
+                payload = json.loads(msg.data)
+                await self._process(payload)
+                await msg.ack()
+            except Exception as e:  # noqa: BLE001
+                log.error("processor.error", err=str(e))
+                # NATS will redeliver up to consumer's max_deliver; after
+                # that the message lands on dlq.indexer (handled by indexer).
+                await msg.nak()
+
+    async def _process(self, ev: dict) -> None:
+        source = ev["source"]
+        doc_id = ev["doc_id"]
+        r2_key = ev["r2_key"]
+        log.debug("process.begin", source=source, doc_id=doc_id)
+
+        # 1. Fetch raw bytes from R2.
+        raw = await asyncio.to_thread(self.r2.get, r2_key)
+
+        # 2. Parse → normalize.
+        doc = parse_source(source, raw)
+
+        # 3. Chunk + embed.
+        chunks = chunk(
+            f"{doc.get('title', '')}\n\n{doc.get('abstract', '')}",
+            self.cfg.chunk_tokens,
+            self.cfg.chunk_overlap,
+        )
+        embeddings = await self.embedder.embed(doc_id, [c.text for c in chunks])
+        if embeddings:
+            doc["embedding"] = mean_pool([e.vector for e in embeddings])
+            doc["embedding_model"] = embeddings[0].model
+
+        # 4. Author × Open Payments fuzzy join.
+        if self.joiner:
+            year = _published_year(doc.get("published_at"))
+            for author in doc.get("authors", []):
+                affil = author.get("affiliation") or ""
+                state = _extract_state(affil)
+                matches, badge = await self.joiner.lookup(author.get("display_name", ""), state, year)
+                author["payments"] = [m.__dict__ for m in matches]
+                author["badge"] = badge.__dict__
+
+        # 5. Publish IndexableDocEvent to indexer.
+        if self.nc:
+            await self.nc.jetstream().publish(
+                f"indexable-docs.{source}",
+                json.dumps({"document": doc}).encode(),
+            )
+        log.debug("process.complete", source=source, doc_id=doc_id)
+
+
+def _published_year(s: str | None) -> int | None:
+    if not s or len(s) < 4 or not s[:4].isdigit():
+        return None
+    return int(s[:4])
+
+
+_US_STATES = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA",
+    "colorado": "CO", "connecticut": "CT", "delaware": "DE", "florida": "FL", "georgia": "GA",
+    "hawaii": "HI", "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA",
+    "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV", "new hampshire": "NH",
+    "new jersey": "NJ", "new mexico": "NM", "new york": "NY", "north carolina": "NC",
+    "north dakota": "ND", "ohio": "OH", "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA",
+    "rhode island": "RI", "south carolina": "SC", "south dakota": "SD", "tennessee": "TN",
+    "texas": "TX", "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+}
+
+
+def _extract_state(affiliation: str) -> str | None:
+    """Best-effort US state extraction from affiliation. Cheap heuristic."""
+    if not affiliation:
+        return None
+    lower = affiliation.lower()
+    for name, code in _US_STATES.items():
+        if name in lower:
+            return code
+        if f", {code.lower()}" in lower or f" {code.lower()} " in lower:
+            return code
+    return None
+
+
+# ---- HTTP healthz ----
+
+def make_app(pipeline: Pipeline) -> FastAPI:
+    app = FastAPI()
+
+    @app.get("/healthz")
+    async def healthz() -> dict:
+        ok = pipeline.nc is not None and pipeline.nc.is_connected
+        return {"status": "ok" if ok else "down", "nats": ok}
+
+    return app
+
+
+async def main() -> None:
+    structlog.configure(processors=[
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer(),
+    ])
+    cfg = Config.from_env()
+    pipeline = Pipeline(cfg)
+    await pipeline.setup()
+
+    config = uvicorn.Config(make_app(pipeline), host="0.0.0.0", port=8080, log_level="info")
+    server = uvicorn.Server(config)
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+
+    try:
+        await asyncio.gather(server.serve(), stop.wait())
+    finally:
+        log.info("processor shutting down")
+        await pipeline.teardown()
+
+
+if __name__ == "__main__":
+    with suppress(KeyboardInterrupt):
+        asyncio.run(main())

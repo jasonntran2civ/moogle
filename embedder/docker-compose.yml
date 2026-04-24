@@ -1,0 +1,28 @@
+name: evidencelens-embedder
+
+services:
+  embedder:
+    build: .
+    image: ghcr.io/evidencelens/embedder:latest
+    restart: unless-stopped
+    environment:
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      BATCH_SIZE: "32"
+      MAX_WAIT_MS: "25"
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_SERVICE_NAME: embedder
+    ports:
+      - "50051:50051"
+      - "8080:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks: [evidencelens]
+
+networks:
+  evidencelens:
+    external: true

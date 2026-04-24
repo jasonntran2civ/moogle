@@ -1,0 +1,21 @@
+name: evidencelens-processor
+
+services:
+  processor:
+    build: .
+    image: ghcr.io/evidencelens/processor:latest
+    restart: unless-stopped
+    env_file: ../infra/.env
+    environment:
+      OTEL_SERVICE_NAME: processor
+    depends_on:
+      - nats
+      - postgres
+    networks: [evidencelens]
+    deploy:
+      resources:
+        limits: { cpus: "2", memory: 4G }
+
+networks:
+  evidencelens:
+    external: true
