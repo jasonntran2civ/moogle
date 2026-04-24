@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-proto:
+    name: Lint Protobuf
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: latest
+      - name: buf lint
+        working-directory: proto
+        run: buf lint
+      - name: buf format check
+        working-directory: proto
+        run: buf format --diff --exit-code
+
+  # Stream-specific lint/test jobs added as streams come online.
+  # Placeholder jobs below are intentionally absent — we will not
+  # ship Moogle-style placeholder echo jobs. Real coverage from day 1.
+
+  guardrails:
+    name: Guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No paid-service env vars committed
+        run: |
+          if grep -RIE 'sk-[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{20,}' \
+                --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.github . ; then
+            echo "::error::Possible API key committed."
+            exit 1
+          fi
+      - name: No .env committed
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$|(^|/)\.env\.[^.]+$' | grep -v '\.example$' ; then
+            echo "::error::.env file committed."
+            exit 1
+          fi

@@ -1,0 +1,6 @@
+packages:
+  - "frontend"
+  - "gateway"
+  - "mcp-server"
+  - "workers/*"
+  - "proto/gen/typescript"
